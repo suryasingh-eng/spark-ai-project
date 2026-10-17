@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+*.py[cod]
+.env
+spark_ai.db
+*.log
+.api.pid
+.DS_Store

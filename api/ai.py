@@ -11,8 +11,11 @@ def ask_gemini(prompt: str) -> str:
         )
     try:
         from google import genai
-        client = genai.Client(api_key=api_key)
-        model = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+        client = genai.Client(
+           api_key=api_key,
+           http_options={"timeout": 60000},
+)
+        model = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
         response = client.models.generate_content(model=model, contents=prompt)
         answer = getattr(response, "text", None)
         if not answer:

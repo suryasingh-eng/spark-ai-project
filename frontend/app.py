@@ -1,6 +1,8 @@
 import os, sys, json, re, time
 from pathlib import Path
 import streamlit as st
+from datetime import datetime, timedelta
+from streamlit_cookies_controller import CookieController
 import requests
 import fitz
 from dotenv import load_dotenv
@@ -9,22 +11,151 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 load_dotenv(ROOT / ".env")
 
-from api.database import init_db, connect
+from api.database import (
+    init_db, connect, create_login_session,
+    get_login_session_user, delete_login_session,
+)
 from api.auth import hash_password, verify_password
 from api.ai import ask_gemini
 
 init_db()
 st.set_page_config(page_title="SPARK AI", page_icon="✨", layout="wide", initial_sidebar_state="expanded")
+cookie_controller = CookieController()
+SESSION_COOKIE_NAME = "spark_ai_session"
 
 CUSTOM_CSS = """
 <style>
-.block-container {padding-top: 1.4rem; padding-bottom: 3rem; max-width: 1250px;}
-[data-testid="stSidebar"] {border-right: 1px solid rgba(128,128,128,.2);}
-.hero {padding: 1.5rem 1.7rem; border-radius: 20px; background: linear-gradient(120deg,#14213d,#23395d,#315c80); color:white; margin-bottom:1rem;}
-.hero h1 {font-size:2.25rem; margin:0 0 .35rem 0;} .hero p {opacity:.9; margin:0;}
-.small-muted {color: #777; font-size:.9rem;}
-div[data-testid="stMetric"] {border:1px solid rgba(128,128,128,.2); padding:15px; border-radius:14px;}
+
+/* ==========================================
+   SPARK AI — Modern Blue Theme
+   ========================================== */
+
+/* Main layout */
+.block-container {
+    max-width: 1180px;
+    padding-top: 1.4rem;
+    padding-bottom: 3rem;
+}
+
+/* Sidebar */
+[data-testid="stSidebar"] {
+    border-right: 1px solid rgba(100, 116, 139, 0.2);
+}
+
+/* Hero section */
+.hero {
+    background: linear-gradient(
+        135deg,
+        #0f172a 0%,
+        #1d4ed8 60%,
+        #0891b2 100%
+    );
+    color: #ffffff;
+    padding: 1.5rem 1.7rem;
+    border-radius: 20px;
+    border: 1px solid #bfdbfe;
+    margin-bottom: 1.5rem;
+}
+
+.hero h1 {
+    color: #ffffff !important;
+    font-size: 2.25rem;
+    line-height: 1.2;
+    margin: 0 0 0.35rem 0;
+}
+
+.hero p {
+    color: #eaf2ff !important;
+}
+
+/* Secondary text */
+.small-muted {
+    color: #777777;
+    font-size: 0.9rem;
+}
+
+/* Dashboard metric cards */
+div[data-testid="stMetric"] {
+    background: #ffffff;
+    border: 1px solid #dbeafe;
+    border-radius: 16px;
+    padding: 1rem;
+    transition: border-color 0.2s ease;
+}
+
+div[data-testid="stMetric"]:hover {
+    border-color: #60a5fa;
+}
+
+/* Blue focus for input fields */
+div[data-testid="stTextInput"] input:focus,
+div[data-testid="stTextArea"] textarea:focus,
+div[data-testid="stNumberInput"] input:focus {
+    border-color: #2563eb !important;
+    box-shadow: 0 0 0 1px #2563eb !important;
+    outline: none;
+}
+
+/* Primary buttons */
+button[kind="primary"] {
+    background-color: #2563eb;
+    border: 1px solid #2563eb;
+    border-radius: 12px;
+    transition: background-color 0.2s ease;
+}
+
+button[kind="primary"]:hover {
+    background-color: #1d4ed8;
+    border-color: #1d4ed8;
+}
+
+/* PDF upload area */
+[data-testid="stFileUploader"] section {
+    border: 1px dashed #93c5fd;
+    border-radius: 16px;
+    background-color: #f8fbff;
+}
+
+/* Forms */
+div[data-testid="stForm"] {
+    border: 1px solid #e2e8f0;
+    border-radius: 16px;
+    padding: 1rem;
+}
+
+/* Rounded input fields */
+div[data-testid="stTextInput"] input,
+div[data-testid="stTextArea"] textarea {
+    border-radius: 10px;
+}
+
+/* Keep images responsive */
+.stMarkdown img {
+    max-width: 100%;
+    height: auto;
+}
+
+/* Mobile-friendly layout */
+@media (max-width: 768px) {
+    .block-container {
+        padding-top: 1rem;
+        padding-bottom: 2rem;
+    }
+
+    .hero {
+        padding: 1.2rem;
+        border-radius: 16px;
+    }
+
+    .hero h1 {
+        font-size: 1.8rem;
+    }
+}
+
 </style>
+
+  
+
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
@@ -56,6 +187,20 @@ def require_user():
         st.stop()
 
 if "user" not in st.session_state: st.session_state.user = None
+
+# Restore the previous login from the browser cookie.
+if st.session_state.user is None:
+    saved_token = cookie_controller.get(SESSION_COOKIE_NAME)
+    if saved_token:
+        restored_user = get_login_session_user(saved_token)
+        if restored_user:
+            st.session_state.user = {
+                "id": restored_user["id"],
+                "name": restored_user["name"],
+                "email": restored_user["email"],
+            }
+        else:
+            cookie_controller.remove(SESSION_COOKIE_NAME)
 if "syllabus_text" not in st.session_state: st.session_state.syllabus_text = ""
 if "syllabus_title" not in st.session_state: st.session_state.syllabus_title = "My syllabus"
 
@@ -66,6 +211,10 @@ with st.sidebar:
         st.success(f"Signed in as {st.session_state.user['name']}")
         page = st.radio("Workspace", ["Dashboard", "Syllabus Lab", "Study Planner", "AI Tutor", "Quiz Studio", "Progress"])
         if st.button("Log out", use_container_width=True):
+            logout_token = cookie_controller.get(SESSION_COOKIE_NAME)
+            if logout_token:
+                delete_login_session(logout_token)
+            cookie_controller.remove(SESSION_COOKIE_NAME)
             st.session_state.user = None
             st.rerun()
     else:
@@ -82,6 +231,14 @@ if not st.session_state.user:
         if submitted:
             row = db_user(email.strip())
             if row and verify_password(password, row["password_hash"]):
+                token = create_login_session(row["id"])
+                cookie_controller.set(
+                    SESSION_COOKIE_NAME,
+                    {
+                        "value": token,
+                        "expiry_date": (datetime.now() + timedelta(days=30)).isoformat(),
+                    },
+                )
                 st.session_state.user = {"id": row["id"], "name": row["name"], "email": row["email"]}
                 st.rerun()
             else:
@@ -104,6 +261,14 @@ if not st.session_state.user:
                     cur = db.execute("INSERT INTO users(name,email,password_hash) VALUES(?,?,?)",
                                      (name.strip(), new_email.strip().lower(), hash_password(p1)))
                     uid = cur.lastrowid
+                token = create_login_session(uid)
+                cookie_controller.set(
+                    SESSION_COOKIE_NAME,
+                    {
+                        "value": token,
+                        "expiry_date": (datetime.now() + timedelta(days=30)).isoformat(),
+                    },
+                )
                 st.session_state.user = {"id": uid, "name": name.strip(), "email": new_email.strip().lower()}
                 st.success("Account created!")
                 st.rerun()
